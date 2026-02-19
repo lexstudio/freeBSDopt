@@ -857,6 +857,9 @@ cpu_search_lowest(const struct cpu_group *cg, const struct cpu_search *s,
 	}
 	return (total);
 }
+
+static int
+cpu_search_highest(const struct cpu_group *cg, const struct cpu_search *s,
     struct cpu_search_res *r)
 {
 	struct cpu_search_res lr;
@@ -3227,10 +3230,13 @@ sched_ule_pctcpu(struct thread *td)
 	ts = td_get_sched(td);
 	sched_pctcpu_update(ts, TD_IS_RUNNING(td));
 	len = SCHED_TICK_LENGTH(ts);
-	pctcpu = ((FSHIFT >= SCHED_TICK_SHIFT ? /* Resolved at compile-time. */
-	    (SCHED_TICK_RUN_SHIFTED(ts) << (FSHIFT - SCHED_TICK_SHIFT)) :
-	    (SCHED_TICK_RUN_SHIFTED(ts) >> (SCHED_TICK_SHIFT - FSHIFT))) +
+#if FSHIFT >= SCHED_TICK_SHIFT
+	pctcpu = ((SCHED_TICK_RUN_SHIFTED(ts) << (FSHIFT - SCHED_TICK_SHIFT)) +
 	    len / 2) / len;
+#else
+	pctcpu = ((SCHED_TICK_RUN_SHIFTED(ts) >> (SCHED_TICK_SHIFT - FSHIFT)) +
+	    len / 2) / len;
+#endif
 	return (pctcpu);
 }
 
