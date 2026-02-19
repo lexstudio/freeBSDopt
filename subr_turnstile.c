@@ -91,9 +91,9 @@
  * shift.  Basically, we ignore the lower 8 bits of the address.
  * TC_TABLESIZE must be a power of two for TC_MASK to work properly.
  *
- * OPT1: TC_TABLESIZE increased from 128 to 256.
+ * TC_TABLESIZE increased from 128 to 256.
  *
- * Under high thread concurrency (e.g. sysbench threads with 32-64 threads),
+ * Under high thread concurrency ,
  * multiple threads block on a small set of hot mutexes.  The LIST_FOREACH
  * walks in turnstile_trywait() and turnstile_lookup() then traverse
  * multi-element chains while holding a chain spin lock (tc_lock), which
@@ -105,9 +105,6 @@
  * power-of-two hash ignoring the same low 8 bits as the sleep-queue code.
  *
  * Cost: ~17 KB extra BSS (128 additional turnstile_chain structs).
- * Estimated gain: ~50% reduction in LIST_FOREACH walk time and tc_lock
- * spin cycles inside turnstile_trywait() and turnstile_lookup() under
- * high concurrency.
  */
 #define	TC_TABLESIZE	256			/* Must be power of 2. */
 #define	TC_MASK		(TC_TABLESIZE - 1)
@@ -592,16 +589,15 @@ turnstile_trywait(struct lock_object *lock)
 	tc = TC_LOOKUP(lock);
 	mtx_lock_spin(&tc->tc_lock);
 	/*
-	 * OPT2: Prefetch the first turnstile in the chain before the
+	 * Prefetch the first turnstile in the chain before the
 	 * LIST_FOREACH loop.  The comparison inside the loop dereferences
 	 * ts->ts_lockobj; when the chain is non-empty, that struct is very
 	 * likely cold in cache (it belongs to a different thread's context).
 	 * Issuing the prefetch immediately after acquiring tc_lock gives the
-	 * hardware ~10-20 instructions of overlap time to fill the cache line
-	 * before the first dereference, hiding ~100-200 cycles of DRAM latency.
+	 * hardware 10-20 instructions of overlap time to fill the cache line
+	 * before the first dereference, hiding 100-200 cycles of DRAM latency.
 	 * If the chain is empty, the prefetch targets NULL+0 which is benign
-	 * on all FreeBSD-supported architectures (prefetch of an invalid
-	 * address is a no-op; it never faults).
+	 * on all FreeBSD-supported architectures
 	 */
 	__builtin_prefetch(LIST_FIRST(&tc->tc_turnstiles), 0, 1);
 	LIST_FOREACH(ts, &tc->tc_turnstiles, ts_hash)
@@ -690,12 +686,11 @@ turnstile_lookup(struct lock_object *lock)
 	tc = TC_LOOKUP(lock);
 	mtx_assert(&tc->tc_lock, MA_OWNED);
 	/*
-	 * OPT3: Same prefetch as OPT2 in turnstile_trywait().
+	 * Same prefetch as before in turnstile_trywait().
 	 * turnstile_lookup() is called from __mtx_unlock_sleep() on the
 	 * contended unlock path — equally hot.  Prefetching the first
 	 * turnstile struct before the LIST_FOREACH hides DRAM latency for
 	 * the ts->ts_lockobj comparison inside the loop.
-	 * Estimated saving: ~100-200 cycles when the first element is cold.
 	 */
 	__builtin_prefetch(LIST_FIRST(&tc->tc_turnstiles), 0, 1);
 	LIST_FOREACH(ts, &tc->tc_turnstiles, ts_hash)
@@ -722,21 +717,17 @@ turnstile_chain_unlock(struct lock_object *lock)
  * Return a pointer to the thread waiting on this turnstile with the
  * most important priority or NULL if the turnstile has no waiters.
  *
- * OPT4: Promoted from 'static' to 'static inline'.
+ * Promoted from 'static' to 'static inline'.
  *
  * This 3-instruction function is called from turnstile_claim(),
  * turnstile_signal(), and the hot turnstile_calc_unlend_prio_locked()
- * loop (which runs on every contested mutex unlock under high concurrency).
+ * loop.
  * Without __inline the compiler may emit a real call frame (push/pop,
  * call/ret) even for such a tiny body.  Inlining eliminates that overhead
  * and, more importantly, exposes the surrounding context to the compiler
  * so it can eliminate redundant TAILQ_FIRST() dereferences and fold the
  * returned pointer into a register across the call site.
  *
- * Estimated saving: 3-8 cycles per call (call/ret + prologue/epilogue)
- * in turnstile_calc_unlend_prio_locked(); multiplied by the number of
- * contested locks held by the releasing thread and the unlock frequency,
- * this compounds meaningfully under sustained contention.
  */
 static inline struct thread *
 turnstile_first_waiter(struct turnstile *ts)
@@ -961,14 +952,13 @@ turnstile_broadcast(struct turnstile *ts, int queue)
 	 * Give a turnstile to each thread.  The last thread gets
 	 * this turnstile if the turnstile is empty.
 	 *
-	 * OPT6: Prefetch the next thread's struct on each iteration.
+	 * Prefetch the next thread's struct on each iteration.
 	 *
 	 * The TAILQ_FOREACH walks the pending list assigning a turnstile
 	 * to each thread.  Each td struct is likely cold (threads were just
 	 * moved from the blocked queue by TAILQ_CONCAT above).  Prefetching
 	 * the next entry with intent-to-write (rw=1) pipelines the pointer-
-	 * chain walk, hiding one DRAM round-trip (~100-200 cycles) per thread.
-	 * Under sysbench threads with N waiters, this saves N-1 DRAM stalls.
+	 * chain walk, hiding one DRAM round-trip per thread.
 	 */
 	TAILQ_FOREACH(td, &ts->ts_pending, td_lockq) {
 		__builtin_prefetch(TAILQ_NEXT(td, td_lockq), 1, 1);
@@ -997,7 +987,7 @@ turnstile_calc_unlend_prio_locked(struct thread *td)
 
 	pri = PRI_MAX;
 	/*
-	 * OPT7: Prefetch next 'nts' on each iteration of the contested-lock
+	 * Prefetch next 'nts' on each iteration of the contested-lock
 	 * list walk.
 	 *
 	 * turnstile_calc_unlend_prio_locked() is called on every contested
@@ -1005,14 +995,12 @@ turnstile_calc_unlend_prio_locked(struct thread *td)
 	 * Under high concurrency a thread can own several contested locks
 	 * simultaneously, making td->td_contested a multi-element list.
 	 * Each nts is a separately-allocated struct turnstile that is likely
-	 * cold in cache; the LIST_NEXT pointer-chase stalls on each step.
+	 * cold in cache, the LIST_NEXT pointer-chase stalls on each step.
 	 *
 	 * Prefetching the next nts with read intent (rw=0) pipelines the
 	 * pointer dereference: while turnstile_first_waiter(nts) runs on the
 	 * current element, the hardware is already fetching the next one.
 	 *
-	 * Estimated saving: ~100-200 cycles per extra contested lock entry
-	 * (one DRAM stall hidden per link in the list).
 	 */
 	LIST_FOREACH(nts, &td->td_contested, ts_link) {
 		__builtin_prefetch(LIST_NEXT(nts, ts_link), 0, 1);
@@ -1086,7 +1074,7 @@ turnstile_unpend(struct turnstile *ts)
 		TAILQ_REMOVE(&pending_threads, td, td_lockq);
 		SDT_PROBE2(sched, , , wakeup, td, td->td_proc);
 		/*
-		 * OPT5: Prefetch the NEXT thread's struct while we are about
+		 * Prefetch the NEXT thread's struct while we are about
 		 * to spin on the CURRENT thread in thread_lock_block_wait().
 		 *
 		 * thread_lock_block_wait() spins (cpu_spinwait loop) until
@@ -1100,10 +1088,6 @@ turnstile_unpend(struct turnstile *ts)
 		 * td_blktick), brings the cache line into a Modified state
 		 * on this CPU before the next iteration begins.
 		 *
-		 * Estimated saving: ~100-200 cycles per woken thread (one
-		 * DRAM round-trip hidden per iteration) when waking >=2
-		 * threads (i.e. any turnstile_broadcast() scenario, which is
-		 * the common case for sysbench threads).
 		 */
 		__builtin_prefetch(TAILQ_FIRST(&pending_threads), 1, 1);
 		thread_lock_block_wait(td);

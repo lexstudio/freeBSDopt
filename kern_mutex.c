@@ -610,20 +610,20 @@ __mtx_lock_sleep(volatile uintptr_t *c, uintptr_t v)
 		 * If the owner is running on another CPU, spin until the
 		 * owner stops running or the state of the lock changes.
 		 *
-		 * OPT1: Prefetch the owner's struct thread before the first
+		 * Prefetch the owner's struct thread before the first
 		 * TD_IS_RUNNING() check and before entering the spin loop.
 		 * TD_IS_RUNNING() dereferences owner->td_state; if the thread
-		 * struct is cold in L1/L2, this prefetch hides ~100-200 cycles
+		 * struct is cold in L1/L2, this prefetch hides 100-200 cycles
 		 * of DRAM latency by issuing the cache-fill request early.
 		 *
-		 * OPT2: Inside the spin loop, only recompute lv_mtx_owner()
+		 * Inside the spin loop, only recompute lv_mtx_owner()
 		 * when the lock word actually changes.  When the owner is stable
 		 * (the common case – owner is still running on another CPU),
 		 * the lock word is unchanged across most iterations so there is
 		 * no point re-deriving the same pointer on every iteration.
 		 */
 		owner = lv_mtx_owner(v);
-		__builtin_prefetch(owner, 0, 0); /* OPT1: warm owner->td_state */
+		__builtin_prefetch(owner, 0, 0); 
 		if (TD_IS_RUNNING(owner)) {
 			uintptr_t new_v;
 
@@ -637,7 +637,7 @@ __mtx_lock_sleep(volatile uintptr_t *c, uintptr_t v)
 			    m->lock_object.lo_name);
 			do {
 				lock_delay(&lda);
-				new_v = MTX_READ_VALUE(m); /* OPT2 */
+				new_v = MTX_READ_VALUE(m); 
 				if (__predict_false(new_v != v)) {
 					v = new_v;
 					if (v != MTX_UNOWNED)
@@ -706,23 +706,17 @@ retry_turnstile:
 		sleep_cnt++;
 #endif
 		/*
-		 * OPT3: Optimistic acquire on wakeup.
 		 *
 		 * __mtx_unlock_sleep() stores MTX_UNOWNED to m->mtx_lock
 		 * *before* calling turnstile_broadcast().  Therefore the first
 		 * thread that runs after wakeup will typically see the lock
 		 * free and can acquire it immediately with a single CAS,
 		 * skipping the separate acquire-ordered MTX_READ_VALUE() and
-		 * the subsequent loop-back + branch that the original code
-		 * required.
-		 *
+		 * the subsequent loop-back 
 		 * _mtx_obtain_lock_fetch() performs the CAS; on failure it
 		 * updates v with the current lock word so the outer loop
 		 * continues with the correct value, exactly as before.
 		 *
-		 * Estimated savings: ~15-40 cycles per contention event for
-		 * the first thread to wake (eliminates one acquire load +
-		 * one full loop iteration overhead).
 		 */
 		v = MTX_UNOWNED;
 		if (_mtx_obtain_lock_fetch(m, &v, tid))
@@ -1045,10 +1039,10 @@ thread_lock_block_wait(struct thread *td)
 {
 
 	/*
-	 * OPT6: Replace bare C read with atomic_load_ptr (relaxed load +
-	 * compiler barrier) to guarantee the compiler re-issues the load on
+	 * Replace bare C read with atomic_load_ptr 
+	 * to guarantee the compiler re-issues the load on
 	 * every iteration.  A plain C read on td->td_lock is not declared
-	 * volatile; an aggressive optimizer may legally hoist it out of the
+	 * volatile an aggressive optimizer may legally lift it out of the
 	 * loop, turning the spin into an infinite loop or dead code.
 	 *
 	 * atomic_load_ptr emits a compiler barrier so the load is never
@@ -1057,8 +1051,6 @@ thread_lock_block_wait(struct thread *td)
 	 * ARM64 per iteration).  The single atomic_thread_fence_acq() below
 	 * remains as the correct one-time acquire fence after the loop exits.
 	 *
-	 * Estimated: correctness fix on weakly-ordered architectures +
-	 * 5-20 cycles/iter saved on ARM64/RISC-V vs an acq load.
 	 */
 	while (atomic_load_ptr((volatile uintptr_t *)&td->td_lock) ==
 	    (uintptr_t)&blocked_lock)
@@ -1349,7 +1341,7 @@ mtx_spin_wait_unlocked(struct mtx *m)
 	lda.spin_cnt = 0;
 
 	/*
-	 * OPT4: Use atomic_load_ptr (relaxed load + compiler barrier) instead
+	 * Use atomic_load_ptr (relaxed load + compiler barrier) instead
 	 * of atomic_load_acq_ptr in the spin loop.  This function is a passive
 	 * observer: it does not acquire the lock and establishes no
 	 * happens-before relationship for subsequent reads.  Acquire semantics
@@ -1358,7 +1350,6 @@ mtx_spin_wait_unlocked(struct mtx *m)
 	 * On x86 this makes no hardware difference (MOV == MOV).
 	 * On ARM64 atomic_load_acq_ptr emits LDAR (~40 cycle ordering
 	 * overhead per iteration); atomic_load_ptr emits a plain LDR.
-	 * Estimated savings: 0 on x86, 5-40 cycles/iter on ARM64/RISC-V.
 	 */
 	while (atomic_load_ptr(&m->mtx_lock) != MTX_UNOWNED) {
 		if (__predict_true(lda.spin_cnt < 10000000)) {
@@ -1386,11 +1377,10 @@ mtx_wait_unlocked(struct mtx *m)
 
 	for (;;) {
 		/*
-		 * OPT5: Use atomic_load_ptr (relaxed) instead of
+		 * Use atomic_load_ptr (relaxed) instead of
 		 * atomic_load_acq_ptr for the non-acquire spin read.
-		 * Same reasoning as OPT4: we are only watching the lock
+		 * Same reasoning as before: we are only watching the lock
 		 * value, not establishing a happens-before relationship here.
-		 * Estimated savings: same as OPT4.
 		 */
 		v = atomic_load_ptr(&m->mtx_lock);
 		if (v == MTX_UNOWNED) {

@@ -598,10 +598,10 @@ tdq_runq_rem(struct tdq *tdq, struct thread *td)
 /*
  * Add the load for this thread to the referenced thread queue.
  *
- * OPT7a: Promoted from 'static void' to 'static inline'.
+ * Promoted from 'static void' to 'static inline'.
  *
  * tdq_load_add() is called from tdq_add() which is on the critical path
- * for every sched_add() (thread wakeup) and every context switch that
+ * for every sched_add() ( and every context switch that
  * re-enqueues the outgoing thread.  The function body is 2-3 instructions
  * of real work (load++ and a conditional sysload++) plus KTR/SDT macros
  * that compile to nothing in a production kernel.  Without 'inline' the
@@ -611,8 +611,6 @@ tdq_runq_rem(struct tdq *tdq, struct thread *td)
  * Inlining also lets the compiler see the surrounding tdq_add() context
  * and CSE the tdq->tdq_load read with adjacent accesses.
  *
- * Estimated saving: 3-8 cycles per call on the wakeup and context-switch
- * hot paths.
  */
 static inline void
 tdq_load_add(struct tdq *tdq, struct thread *td)
@@ -632,13 +630,12 @@ tdq_load_add(struct tdq *tdq, struct thread *td)
  * Remove the load from a thread that is transitioning to a sleep state or
  * exiting.
  *
- * OPT7b: Promoted from 'static void' to 'static inline'.
+ * Promoted from 'static void' to 'static inline'.
  *
  * Same reasoning as tdq_load_add() above.  tdq_load_rem() is called from
  * sched_ule_rem(), sched_ule_sswitch() (sleep path), sched_switch_migrate(),
  * and sched_ule_throw() — all hot paths in the sysbench thread cycle.
  *
- * Estimated saving: 3-8 cycles per call.
  */
 static inline void
 tdq_load_rem(struct tdq *tdq, struct thread *td)
@@ -684,19 +681,18 @@ tdq_slice(struct tdq *tdq)
  * Set lowpri to its exact value by searching the run-queue and
  * evaluating curthread.  curthread may be passed as an optimization.
  *
- * OPT13: Promoted from 'static void' to 'static inline'.
+ * Promoted from 'static void' to 'static inline'.
  *
- * tdq_setlowpri() is called from sched_ule_rem() (every dequeue),
+ * tdq_setlowpri() is called from sched_ule_rem() ,
  * sched_ule_userret_slowpath(), and sched_thread_priority() on the
  * running-thread priority adjustment path.  The body is ~5 instructions
  * of real work: a NULL check, a tdq_choose() call, a comparison, and an
- * assignment.  The call/ret + prologue/epilogue overhead (~3-8 cycles) is
+ * assignment.  The call/ret + prologue/epilogue overhead (3-8 cycles) is
  * non-trivial relative to the function body.
  *
  * Inlining also enables the compiler to hoist the NULL check or fold the
  * result with adjacent ctd->td_priority accesses at the call site.
  *
- * Estimated saving: 3-8 cycles per call.
  */
 static inline void
 tdq_setlowpri(struct tdq *tdq, struct thread *ctd)
@@ -794,7 +790,7 @@ cpu_search_lowest(const struct cpu_group *cg, const struct cpu_search *s,
 	/* Loop through children CPUs otherwise. */
 	for (c = cg->cg_last; c >= cg->cg_first; c--) {
 		/*
-		 * OPT2: Prefetch the next CPU's tdq struct at the top of each
+		 * Prefetch the next CPU's tdq struct at the top of each
 		 * iteration.
 		 *
 		 * TDQ_CPU(c) returns per-CPU DPCPU data, which lives in a
@@ -811,8 +807,6 @@ cpu_search_lowest(const struct cpu_group *cg, const struct cpu_search *s,
 		 * is speculative but benign: prefetch to an out-of-bounds
 		 * address is silently ignored on all supported architectures.
 		 *
-		 * Estimated saving: 50-200 cycles per sched_pickcpu() call on
-		 * 8+ core systems where remote tdq structs are cold.
 		 */
 		__builtin_prefetch(TDQ_CPU(c - 1), 0, 1);
 
@@ -888,8 +882,8 @@ cpu_search_highest(const struct cpu_group *cg, const struct cpu_search *s,
 	/* Loop through children CPUs otherwise. */
 	for (c = cg->cg_last; c >= cg->cg_first; c--) {
 		/*
-		 * OPT9: Prefetch the next CPU's tdq struct, mirroring OPT2
-		 * in cpu_search_lowest().
+		 * Prefetch the next CPU's tdq struct, as above
+		 * 
 		 *
 		 * cpu_search_highest() is called from sched_balance_group()
 		 * (periodic rebalance) and tdq_idled() (idle steal).  In the
@@ -899,8 +893,6 @@ cpu_search_highest(const struct cpu_group *cg, const struct cpu_search *s,
 		 * across NUMA nodes.  Prefetching one CPU ahead pipelines the
 		 * DRAM fill with the processing of the current CPU.
 		 *
-		 * Estimated saving: 50-200 cycles per tdq_idled() / balance
-		 * call on 8+ core systems.
 		 */
 		__builtin_prefetch(TDQ_CPU(c - 1), 0, 1);
 
@@ -1191,14 +1183,6 @@ restart:
 			continue;
 		}
 		steal = TDQ_CPU(cpu);
-		/*
-		 * The data returned by sched_highest() is stale and
-		 * the chosen CPU no longer has an eligible thread.
-		 *
-		 * Testing this ahead of tdq_lock_pair() only catches
-		 * this situation about 20% of the time on an 8 core
-		 * 16 thread Ryzen 7, but it still helps performance.
-		 */
 		if (TDQ_LOAD(steal) < steal_thresh ||
 		    TDQ_TRANSFERABLE(steal) == 0)
 			goto restart;
@@ -1314,7 +1298,7 @@ runq_steal_pred(const int idx, struct rq_queue *const q, void *const data)
 	struct thread *td;
 
 	/*
-	 * OPT12: Prefetch the next thread in the run queue on each iteration.
+	 * Prefetch the next thread in the run queue on each iteration.
 	 *
 	 * This function walks a run queue that belongs to a *remote* CPU.
 	 * The struct thread entries are almost certainly cold in this CPU's
@@ -1329,8 +1313,6 @@ runq_steal_pred(const int idx, struct rq_queue *const q, void *const data)
 	 * entry in the queue.  We use read-intent (rw=0) since we only
 	 * read these fields.
 	 *
-	 * Estimated saving: 100-200 cycles per extra thread entry examined
-	 * before a migratable one is found.
 	 */
 	TAILQ_FOREACH(td, q, td_runq) {
 		__builtin_prefetch(TAILQ_NEXT(td, td_runq), 0, 1);
@@ -1791,11 +1773,8 @@ sched_interact_score(struct thread *td)
 
 	ts = td_get_sched(td);
 	/*
-	 * The score is only needed if this is likely to be an interactive
-	 * task.  Don't go through the expense of computing it if there's
-	 * no chance.
 	 *
-	 * OPT4: Mark the condition __predict_true.
+	 * Mark the condition __predict_true.
 	 *
 	 * For CPU-heavy threads (e.g. sysbench threads spending most time
 	 * blocking on mutexes rather than voluntarily sleeping), runtime is
@@ -1803,10 +1782,8 @@ sched_interact_score(struct thread *td)
 	 * call.  __predict_true re-orders the generated code to make the
 	 * return the fall-through path and the score-computation code the
 	 * taken branch, improving the branch predictor's accuracy and
-	 * eliminating a branch mis-predict penalty (~15 cycles on modern x86).
+	 * eliminating a branch mis-predict penalty .
 	 *
-	 * Estimated saving: 1-15 cycles per call depending on how well the
-	 * CPU's hardware branch predictor has already learned the pattern.
 	 */
 	if (__predict_true(sched_interact <= SCHED_INTERACT_HALF &&
 		ts->ts_runtime >= ts->ts_slptime))
@@ -1861,21 +1838,8 @@ sched_priority(struct thread *td)
 	 */
 	score = imax(0, sched_interact_score(td) + nice);
 	/*
-	 * OPT5: Mark the interactive branch __predict_false.
+	 * Mark the interactive branch __predict_false.
 	 *
-	 * For CPU-heavy threads (sysbench threads spend nearly all time
-	 * running or contending on mutexes, not sleeping voluntarily),
-	 * sched_interact_score() almost always returns SCHED_INTERACT_HALF
-	 * (50).  With nice==0, 'score' is 50 and sched_interact is 30
-	 * (default), so 'score < sched_interact' (50 < 30) is false on
-	 * virtually every call.
-	 *
-	 * __predict_false keeps the batch-priority computation (the common
-	 * path) as fall-through code and moves the interactive path to a
-	 * cold branch target, matching the hardware branch predictor's
-	 * default and reducing mis-predict penalties.
-	 *
-	 * Estimated saving: 1-15 cycles per call.
 	 */
 	if (__predict_false(score < sched_interact)) {
 		pri = PRI_MIN_INTERACT;
@@ -1925,7 +1889,7 @@ sched_interact_update(struct thread *td)
 	ts = td_get_sched(td);
 	sum = ts->ts_runtime + ts->ts_slptime;
 	/*
-	 * OPT10: Mark the fast-path return __predict_true.
+	 * Mark the fast-path return __predict_true.
 	 *
 	 * sched_interact_update() is called from sched_ule_clock() on
 	 * every stathz tick for every timeshare thread, and from
@@ -1936,9 +1900,8 @@ sched_interact_update(struct thread *td)
 	 *
 	 * __predict_true keeps the return as fall-through code and moves
 	 * the scaling logic to a cold branch, saving a mis-predict penalty
-	 * (~15 cycles on modern x86) on the hot path.
+	 * on the hot path.
 	 *
-	 * Estimated saving: 1-15 cycles per call.
 	 */
 	if (__predict_true(sum < SCHED_SLP_RUN_MAX))
 		return;
@@ -1968,11 +1931,11 @@ sched_interact_update(struct thread *td)
 		return;
 	}
 	/*
-	 * OPT11: Use multiply-first form for the 4/5 scaling.
+	 * Use multiply-first form for the 4/5 scaling.
 	 *
 	 * The original code (x / 5) * 4 performs a divide followed by a
 	 * multiply.  Integer division by 5 is not a power-of-two and the
-	 * compiler must emit a reciprocal-multiply sequence (~3-5 cycles)
+	 * compiler must emit a reciprocal-multiply sequence 
 	 * for each operand.  Writing it as (x * 4) / 5 expresses the
 	 * same value but lets the compiler see the multiply-first form:
 	 * x * 4 is a free left-shift, then one reciprocal-multiply for the
@@ -1983,7 +1946,6 @@ sched_interact_update(struct thread *td)
 	 * SCHED_SLP_RUN_MAX = (hz * 5) << 10 ≈ 5 * 100 * 1024 = 512000,
 	 * the maximum value before * 4 is ~614400, well within u_int range.
 	 *
-	 * Estimated saving: 3-8 cycles in the (rare) slow path.
 	 */
 	ts->ts_runtime = (ts->ts_runtime * 4) / 5;
 	ts->ts_slptime = (ts->ts_slptime * 4) / 5;
@@ -2076,7 +2038,7 @@ sched_pctcpu_update(struct td_sched *ts, int run)
 	const u_int lu_span = t - ts->ts_ltick;
 
 	/*
-	 * OPT1: Early exit when called more than once in the same tick.
+	 * Early exit when called more than once in the same tick.
 	 *
 	 * lu_span == 0 means ts_ltick == t, i.e., this function was already
 	 * called this tick.  When that is true the entire function body is a
@@ -2096,9 +2058,6 @@ sched_pctcpu_update(struct td_sched *ts, int run)
 	 * by choosethread()), and whenever sched_ule_wakeup() is followed
 	 * almost immediately by a context switch in the same tick.
 	 *
-	 * Estimated saving: 20-50 cycles per context switch (replaces a
-	 * multiply + divide + several conditional branches with a single
-	 * compare-and-return).
 	 */
 	if (__predict_false(lu_span == 0))
 		return;
@@ -2568,27 +2527,8 @@ sched_ule_sswitch(struct thread *td, int flags)
 	MPASS(td == tdq->tdq_curthread);
 	newtd = choosethread();
 	/*
-	 * OPT3: Prefetch newtd's struct thread and struct td_sched
+	 * Prefetch newtd's struct thread and struct td_sched
 	 * immediately after choosethread() returns the pointer.
-	 *
-	 * If newtd was sleeping (the common case for sysbench threads
-	 * that blocked on a mutex), its struct thread and embedded
-	 * struct td_sched may be cold in cache.  Both are needed
-	 * immediately: sched_pctcpu_update() accesses ts_ltick / ts_ftick /
-	 * ts_ticks, and cpu_switch() accesses many td_* fields.
-	 *
-	 * Issuing both prefetches here gives the hardware ~15-20 instructions
-	 * of overlap time (TDQ_UNLOCK + spinlock accounting) to fill both
-	 * cache lines before they are first dereferenced.
-	 *
-	 * Two prefetches cover struct thread (often 512+ bytes) and the
-	 * immediately following struct td_sched.  We use locality hint 1
-	 * (L2/L3 retention) since newtd will be running on this CPU and
-	 * its data should stay warm across its entire timeslice.
-	 *
-	 * Estimated saving: 50-150 cycles per context switch when the
-	 * incoming thread's structs are cold (typical under high contention
-	 * with many threads cycling through sleep/wake).
 	 */
 	__builtin_prefetch(newtd, 0, 1);
 	__builtin_prefetch(td_get_sched(newtd), 0, 1);
@@ -2698,20 +2638,6 @@ sched_ule_wakeup(struct thread *td, int srqflags)
 	 */
 	slptick = td->td_slptick;
 	td->td_slptick = 0;
-	/*
-	 * OPT6: Mark the sleep-accounting block __predict_false.
-	 *
-	 * For sysbench threads, the block/unblock cycle for a mutex is
-	 * typically far shorter than one scheduler tick (~10ms at hz=100).
-	 * That means slptick == ticks on the vast majority of wakeups, so
-	 * the condition 'slptick && slptick != ticks' is almost never true.
-	 *
-	 * __predict_false keeps the fast path (no accounting needed) as
-	 * fall-through code, saving a branch mis-predict penalty on the
-	 * very frequent wakeup path.
-	 *
-	 * Estimated saving: 1-15 cycles per wakeup.
-	 */
 	if (__predict_false(slptick && slptick != ticks)) {
 		ts->ts_slptime += (ticks - slptick) << SCHED_TICK_SHIFT;
 		sched_interact_update(td);
@@ -2956,31 +2882,9 @@ sched_ule_clock(struct thread *td, int cnt)
 	}
 	ts = td_get_sched(td);
 	/*
-	 * OPT14: Hoist the FIFO/idle early-return check to before
+	 * Hoist the FIFO/idle early-return check to before
 	 * sched_pctcpu_update().
 	 *
-	 * In the original code the check appears *after* the pctcpu update,
-	 * meaning FIFO and idle threads pay the full cost of
-	 * sched_pctcpu_update() (a ticks read, a subtraction, and
-	 * potentially a multiply + divide for t_max/t_tgt computation)
-	 * on every stathz tick — only to immediately return and discard
-	 * the results.
-	 *
-	 * FIFO threads never use the pctcpu data for priority decisions
-	 * (they have fixed priorities by definition).  Idle threads are
-	 * equally unaffected: their priority is PRI_MAX_IDLE and is never
-	 * recalculated by sched_priority().
-	 *
-	 * Moving the check before sched_pctcpu_update() saves the entire
-	 * pctcpu computation for these thread classes.  The pctcpu value
-	 * for FIFO/idle threads is still updated when sched_ule_pctcpu()
-	 * is explicitly called, which calls sched_pctcpu_update() directly.
-	 * That covers the only case where the value is actually needed.
-	 *
-	 * Estimated saving: 5-30 cycles per stathz tick for FIFO and idle
-	 * threads (full sched_pctcpu_update() body avoided, including the
-	 * OPT1 fast-path which still costs ~5 cycles for the ticks read
-	 * and comparison).
 	 */
 	if (__predict_false((td->td_pri_class & PRI_FIFO_BIT) ||
 	    TD_IS_IDLETHREAD(td)))
@@ -2988,22 +2892,6 @@ sched_ule_clock(struct thread *td, int cnt)
 	sched_pctcpu_update(ts, 1);
 
 	if (PRI_BASE(td->td_pri_class) == PRI_TIMESHARE) {
-		/*
-		 * We used a tick; charge it to the thread so
-		 * that we can compute our interactivity.
-		 *
-		 * OPT8: Use the already-loaded 'ts' pointer instead of
-		 * calling td_get_sched(td) a second time.
-		 *
-		 * td_get_sched() is an inline pointer computation that
-		 * resolves at compile time, but the compiler must still
-		 * reload the base 'td' pointer and compute the offset
-		 * each time it appears as a separate expression.  Reusing
-		 * 'ts' (already in a register from the assignment above)
-		 * eliminates one register-to-register dependency and one
-		 * memory address computation, saving 1-3 cycles on this
-		 * stathz-tick hot path.
-		 */
 		ts->ts_runtime += tickincr * cnt;
 		sched_interact_update(td);
 		sched_priority(td);
